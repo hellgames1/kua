@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html lang="bg">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Учебна програма</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --surface: #ffffff;
+    --text: #1d2330;
+    --muted: #667085;
+    --line: #dfe3ea;
+    --accent: #2457c5;
+    --accent-soft: #e6edfb;
+    --alert: #d11a2a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171f;
+      --surface: #1c202b;
+      --text: #e8ebf2;
+      --muted: #98a1b3;
+      --line: #2b3140;
+      --accent: #7ea3f5;
+      --accent-soft: #232c45;
+      --alert: #ff6b6b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px 16px 48px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    line-height: 1.45;
+  }
+  main { max-width: 760px; margin: 0 auto; }
+  section { margin-bottom: 40px; }
+  h2 { font-size: 1.2rem; margin: 0 0 4px; }
+  .week-info { margin: 0 0 12px; color: var(--muted); font-size: 0.95rem; }
+  .week-info b { color: var(--accent); font-weight: 600; }
+  .table-wrap { overflow-x: auto; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 1rem; /* the script lowers this on narrow screens so nothing wraps */
+    background: var(--surface);
+    border: 1px solid var(--line);
+  }
+  /* Padding is in em, so it shrinks together with the font. Text never wraps. */
+  th, td { padding: 0.65em 0.55em; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--line); }
+  th { background: var(--accent-soft); font-weight: 600; font-size: 0.9em; }
+  td.time { white-space: nowrap; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+  td.title { font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  /* A lesson that is cancelled: one continuous line through the whole row.
+     Every cell draws a line across its middle; the cells touch, so the lines join up. */
+  tr.cancelled td {
+    background: linear-gradient(var(--text), var(--text)) center / 100% 1px no-repeat;
+  }
+  /* A special note: sits in its own line under the lesson, centered, in red. */
+  tr.has-note td { border-bottom: none; padding-bottom: 0.25em; }
+  tr.note-row td { text-align: center; white-space: normal; color: var(--alert); font-weight: 600; padding-top: 0.1em; }
+  .note-mark { color: var(--alert); margin-left: 0.15em; }
+  /* The original text of a lesson that was changed. */
+  .old { text-decoration: line-through; color: var(--muted); font-weight: 400; }
+  button#next-day {
+    display: block; margin: 0 auto; padding: 0.7em 1.4em;
+    font: inherit; font-weight: 600; color: #fff; background: var(--accent);
+    border: none; border-radius: 6px; cursor: pointer;
+  }
+  button#next-day[hidden] { display: none; }
+  button#next-day:focus-visible { outline: 3px solid var(--text); outline-offset: 2px; }
+  .empty { padding: 16px; background: var(--surface); border: 1px solid var(--line); color: var(--muted); }
+</style>
+</head>
+<body>
+<main id="app"></main>
+
+<script>
+/* ==========================================================================
+   1. SETTINGS - change these to suit you
+   ========================================================================== */
+
+// Any date (YYYY-MM-DD) inside the week that counts as week 1 (an ODD week).
+// The week is taken to run Monday-Sunday, so any day of it works.
+const FIRST_WEEK_DATE = "2026-09-14";
+
+// How many days are shown when the page opens (the button adds more, one at a time).
+const DAYS_TO_SHOW = 5;
+
+// How long each lesson lasts, in minutes (a lesson starting at 8 ends at 8:45).
+const LESSON_MINUTES = 45;
+
+// false = show only the hours that have an entry, true = show all 12 hours.
+const SHOW_EMPTY_HOURS = false;
+
+// On narrow screens (phones) the tables shrink their text so that nothing wraps.
+// This is the smallest font size (in pixels) allowed; below it the table scrolls sideways.
+const MIN_FONT_SIZE = 9;
+
+// Everything that is displayed on the page.
+const TEXT = {
+  weekLabel: "Седмица",
+  odd: "нечетна",
+  even: "четна",
+  colTime: "Време",
+  colTitle: "Предмет",
+  colDetails: "Детайли",
+  showNextDay: "покажи следващ ден",
+  nothingFound: "В програмата няма въведени записи. Попълнете данните в SCHEDULE във файла.",
+
+  // Index = Date.getDay() (0 = Sunday)
+  weekdays: ["неделя", "понеделник", "вторник", "сряда", "четвъртък", "петък", "събота"],
+  months: ["януари", "февруари", "март", "април", "май", "юни",
+           "юли", "август", "септември", "октомври", "ноември", "декември"],
+
+  // The note in brackets after the date.
+  today: "днес",
+  tomorrow: "утре",
+  dayAfterTomorrow: "другиден",
+  inDays: days => `след ${days} дена`,
+};
+
+/* ==========================================================================
+   2. SCHEDULE DATA - fill this in
+   --------------------------------------------------------------------------
+   For every day, there is an "odd" and an "even" week, and each of them has
+   one entry per hour (the number is the starting hour: 7 = 07:00-07:45).
+   Leave BOTH title and details as "" to mean "nothing at this time".
+   A day with no entries at all is simply skipped.
+   The examples below are placeholders - overwrite or delete them.
+   ========================================================================== */
+
+const SCHEDULE = {
+    monday: {
+      odd: {
+         7: { title: "", details: "" },   // 07:00-08:00
+         8: { title: "П И К - 1", details: "л, 1.417" },   // 08:00-09:00
+         9: { title: "П И К - 1", details: "л, 1.417" },   // 09:00-10:00
+        10: { title: "П И К - 1", details: "пу, 1.405.1" },   // 10:00-11:00
+        11: { title: "П И К - 1", details: "пу, 1.405.1" },   // 11:00-12:00
+        12: { title: "Ел.безопасност", details: "л, 1.313" },   // 12:00-13:00
+        13: { title: "Ел.безопасност", details: "л, 1.313" },   // 13:00-14:00
+        14: { title: "Висша мат.1", details: "л, 1.319" },   // 14:00-15:00
+        15: { title: "Висша мат.1", details: "л, 1.319" },   // 15:00-16:00
+        16: { title: "", details: "" },   // 16:00-17:00
+        17: { title: "", details: "" },   // 17:00-18:00
+        18: { title: "", details: "" },   // 18:00-19:00
+      },
+      even: {
+         7: { title: "", details: "" },   // 07:00-08:00
+         8: { title: "П И К - 1", details: "л, 1.417" },   // 08:00-09:00
+         9: { title: "П И К - 1", details: "л, 1.417" },   // 09:00-10:00
+        10: { title: "", details: "" },   // 10:00-11:00
+        11: { title: "", details: "" },   // 11:00-12:00
+        12: { title: "Ел.безопасност", details: "пу, 10.201" },   // 12:00-13:00
+        13: { title: "Ел.безопасност", details: "пу, 10.201" },   // 13:00-14:00
+        14: { title: "Висша мат.1", details: "л, 1.319" },   // 14:00-15:00
+        15: { title: "Висша мат.1", details: "л, 1.319" },   // 15:00-16:00
+        16: { title: "", details: "" },   // 16:00-17:00
+        17: { title: "", details: "" },   // 17:00-18:00
+        18: { title: "", details: "" },   // 18:00-19:00
+      },
+    },
+
+    tuesday: {
+      odd: {
+         7: { title: "", details: "" },   // 07:00-07:45
+         8: { title: "Учебна практика", details: "л, 10.326" },   // 08:00-08:45
+         9: { title: "Учебна практика", details: "л, 10.326" },   // 09:00-09:45
+        10: { title: "Комп.графика", details: "л, 2.209" },   // 10:00-10:45
+        11: { title: "Комп.графика", details: "л, 2.209" },   // 11:00-11:45
+        12: { title: "Физика 1", details: "лу, 1.213" },   // 12:00-12:45
+        13: { title: "Физика 1", details: "лу, 1.213" },   // 13:00-13:45
+        14: { title: "Физика 1", details: "л, 1.219" },   // 14:00-14:45
+        15: { title: "Физика 1", details: "л, 1.219" },   // 15:00-15:45
+        16: { title: "", details: "" },   // 16:00-16:45
+        17: { title: "", details: "" },   // 17:00-17:45
+        18: { title: "", details: "" },   // 18:00-18:45
+      },
+      even: {
+         7: { title: "", details: "" },   // 07:00-07:45
+         8: { title: "", details: "" },   // 08:00-08:45
+         9: { title: "", details: "" },   // 09:00-09:45
+        10: { title: "Комп.графика", details: "л, 2.209" },   // 10:00-10:45
+        11: { title: "Комп.графика", details: "л, 2.209" },   // 11:00-11:45
+        12: { title: "Физика 1", details: "лу, 1.213" },   // 12:00-12:45
+        13: { title: "Физика 1", details: "лу, 1.213" },   // 13:00-13:45
+        14: { title: "Физика 1", details: "л, 1.219" },   // 14:00-14:45
+        15: { title: "Физика 1", details: "л, 1.219" },   // 15:00-15:45
+        16: { title: "", details: "" },   // 16:00-16:45
+        17: { title: "", details: "" },   // 17:00-17:45
+        18: { title: "", details: "" },   // 18:00-18:45
+      },
+    },
+
+    wednesday: {
+      odd: {
+         7: { title: "", details: "" },   // 07:00-07:45
+         8: { title: "Висша мат.1", details: "су, 2Б.409" },   // 08:00-08:45
+         9: { title: "Висша мат.1", details: "су, 2Б.409" },   // 09:00-09:45
+        10: { title: "Комп.графика", details: "пу, 1.305" },   // 10:00-10:45
+        11: { title: "Комп.графика", details: "пу, 1.305" },   // 11:00-11:45
+        12: { title: "Учебна практика", details: "пу, 10.106" },   // 12:00-12:45
+        13: { title: "Учебна практика", details: "пу, 10.106" },   // 13:00-13:45
+        14: { title: "Спец. конс.", details: "су, 10.106" },   // 14:00-14:45
+        15: { title: "Спец. конс.", details: "су, 10.106" },   // 15:00-15:45
+        16: { title: "", details: "" },   // 16:00-16:45
+        17: { title: "", details: "" },   // 17:00-17:45
+        18: { title: "", details: "" },   // 18:00-18:45
+      },
+      even: {
+         7: { title: "", details: "" },   // 07:00-07:45
+         8: { title: "Висша мат.1", details: "су, 2Б.409" },   // 08:00-08:45
+         9: { title: "Висша мат.1", details: "су, 2Б.409" },   // 09:00-09:45
+        10: { title: "Комп.графика", details: "пу, 1.305" },   // 10:00-10:45
+        11: { title: "Комп.графика", details: "пу, 1.305" },   // 11:00-11:45
+        12: { title: "Учебна практика", details: "пу, 10.106" },   // 12:00-12:45 пу, 6.303
+        13: { title: "Учебна практика", details: "пу, 10.106" },   // 13:00-13:45
+        14: { title: "", details: "" },   // 14:00-14:45
+        15: { title: "", details: "" },   // 15:00-15:45
+        16: { title: "", details: "" },   // 16:00-16:45
+        17: { title: "", details: "" },   // 17:00-17:45
+        18: { title: "", details: "" },   // 18:00-18:45
+      },
+    },
+
+    thursday: {
+      odd: {
+         7: { title: "", details: "" },   // 07:00-07:45
+         8: { title: "", details: "" },   // 08:00-08:45
+         9: { title: "Английски език", details: "пу, 2Г.307" },   // 09:00-09:45
+        10: { title: "Английски език", details: "пу, 2Г.307" },   // 10:00-10:45
+        11: { title: "Английски език", details: "пу, 2Г.307" },   // 11:00-11:45
+        12: { title: "", details: "" },   // 12:00-12:45
+        13: { title: "", details: "" },   // 13:00-13:45
+        14: { title: "", details: "" },   // 14:00-14:45
+        15: { title: "", details: "" },   // 15:00-15:45
+        16: { title: "", details: "" },   // 16:00-16:45
+        17: { title: "", details: "" },   // 17:00-17:45
+        18: { title: "", details: "" },   // 18:00-18:45
+      },
+      even: {
+         7: { title: "", details: "" },   // 07:00-07:45
+         8: { title: "", details: "" },   // 08:00-08:45
+         9: { title: "Английски език", details: "пу, 2Г.307" },   // 09:00-09:45 2Г.307
+        10: { title: "Английски език", details: "пу, 2Г.307" },   // 10:00-10:45
+        11: { title: "Английски език", details: "пу, 2Г.307" },   // 11:00-11:45
+        12: { title: "", details: "" },   // 12:00-12:45
+        13: { title: "", details: "" },   // 13:00-13:45
+        14: { title: "", details: "" },   // 14:00-14:45
+        15: { title: "", details: "" },   // 15:00-15:45
+        16: { title: "", details: "" },   // 16:00-16:45
+        17: { title: "", details: "" },   // 17:00-17:45
+        18: { title: "", details: "" },   // 18:00-18:45
+      },
+    },
+
+    friday: {
+      odd: {
+         7: { title: "", details: "" },   // 07:00-07:45
+         8: { title: "", details: "" },   // 08:00-08:45
+         9: { title: "", details: "" },   // 09:00-09:45
+        10: { title: "", details: "" },   // 10:00-10:45
+        11: { title: "", details: "" },   // 11:00-11:45
+        12: { title: "", details: "" },   // 12:00-12:45
+        13: { title: "", details: "" },   // 13:00-13:45
+        14: { title: "", details: "" },   // 14:00-14:45
+        15: { title: "", details: "" },   // 15:00-15:45
+        16: { title: "", details: "" },   // 16:00-16:45
+        17: { title: "", details: "" },   // 17:00-17:45
+        18: { title: "", details: "" },   // 18:00-18:45
+      },
+      even: {
+         7: { title: "", details: "" },   // 07:00-07:45
+         8: { title: "", details: "" },   // 08:00-08:45
+         9: { title: "", details: "" },   // 09:00-09:45
+        10: { title: "", details: "" },   // 10:00-10:45
+        11: { title: "", details: "" },   // 11:00-11:45
+        12: { title: "", details: "" },   // 12:00-12:45
+        13: { title: "", details: "" },   // 13:00-13:45
+        14: { title: "", details: "" },   // 14:00-14:45
+        15: { title: "", details: "" },   // 15:00-15:45
+        16: { title: "", details: "" },   // 16:00-16:45
+        17: { title: "", details: "" },   // 17:00-17:45
+        18: { title: "", details: "" },   // 18:00-18:45
+      },
+    },
+
+    saturday: {
+      odd: {
+         7: { title: "", details: "" },   // 07:00-07:45
+         8: { title: "", details: "" },   // 08:00-08:45
+         9: { title: "", details: "" },   // 09:00-09:45
+        10: { title: "", details: "" },   // 10:00-10:45
+        11: { title: "", details: "" },   // 11:00-11:45
+        12: { title: "", details: "" },   // 12:00-12:45
+        13: { title: "", details: "" },   // 13:00-13:45
+        14: { title: "", details: "" },   // 14:00-14:45
+        15: { title: "", details: "" },   // 15:00-15:45
+        16: { title: "", details: "" },   // 16:00-16:45
+        17: { title: "", details: "" },   // 17:00-17:45
+        18: { title: "", details: "" },   // 18:00-18:45
+      },
+      even: {
+         7: { title: "", details: "" },   // 07:00-07:45
+         8: { title: "", details: "" },   // 08:00-08:45
+         9: { title: "", details: "" },   // 09:00-09:45
+        10: { title: "", details: "" },   // 10:00-10:45
+        11: { title: "", details: "" },   // 11:00-11:45
+        12: { title: "", details: "" },   // 12:00-12:45
+        13: { title: "", details: "" },   // 13:00-13:45
+        14: { title: "", details: "" },   // 14:00-14:45
+        15: { title: "", details: "" },   // 15:00-15:45
+        16: { title: "", details: "" },   // 16:00-16:45
+        17: { title: "", details: "" },   // 17:00-17:45
+        18: { title: "", details: "" },   // 18:00-18:45
+      },
+    },
+};
+
+/* ==========================================================================
+   3. TEMPORARY CORRECTIONS - up to 10 one-off changes to the schedule
+   --------------------------------------------------------------------------
+   Each correction is for ONE specific date and ONE hour (same hour numbers
+   as above). What it does depends on which fields you fill in:
+
+   title "",  details ""   -> the lesson is cancelled (shown struck through)
+   title "",  details "..." -> same subject, new details (e.g. another room);
+                              the old details are struck through
+   title "...", details "..." -> a different lesson; the old subject and details
+                              are struck through, the new ones are shown below
+   If there is NO lesson at that date and hour, a filled-in correction
+   simply adds a new lesson there.
+
+   Examples (copy one into a free line below):
+     { date: "2026-11-04", hour: 13, title: "",        details: ""              },  // cancelled
+     { date: "2026-11-04", hour: 13, title: "",        details: "room 3.120"    },  // new room
+     { date: "2026-11-04", hour: 13, title: "Algebra", details: "Seminar, 1.101" },  // different lesson
+
+   Lines with date "" are unused and ignored. Dates are written YYYY-MM-DD.
+   ========================================================================== */
+
+const CORRECTIONS = [
+  { date: "2026-11-03", hour: 10, title: "", details: "пу, 1.305" }, //на 3 ноември упражнение вместо лекция комп графика
+  { date: "2026-11-03", hour: 11, title: "", details: "пу, 1.305" },
+  
+  { date: "2026-11-04", hour: 12, title: "", details: "пу, 6.303" }, //от 6 до 10 седмица сме в 6 корпус упр. учебна практика
+  { date: "2026-11-04", hour: 13, title: "", details: "пу, 6.303" },
+  { date: "2026-11-11", hour: 12, title: "", details: "пу, 6.303" },
+  { date: "2026-11-11", hour: 13, title: "", details: "пу, 6.303" },
+  { date: "2026-11-18", hour: 12, title: "", details: "пу, 6.303" },
+  { date: "2026-11-18", hour: 13, title: "", details: "пу, 6.303" },
+  
+  { date: "2026-11-10", hour: 10, title: "", details: "" }, //10 и 11 ноември нямаме комп. графика - командировка
+  { date: "2026-11-10", hour: 11, title: "", details: "" },
+  { date: "2026-11-11", hour: 10, title: "", details: "" },
+  { date: "2026-11-11", hour: 11, title: "", details: "" },
+];
+
+/* ==========================================================================
+   4. SPECIAL NOTES - messages for a specific lesson on a specific date
+   --------------------------------------------------------------------------
+   A note is shown in red, centered, under the lesson's row, and the subject
+   gets a red asterisk (*). Each note is for one date (YYYY-MM-DD) and one hour
+   (same hour numbers as above). The lesson itself is not changed.
+   A note only appears if there is a row at that date and hour.
+   Add as many lines as you need - copy a line and paste it below the others.
+
+   Example:
+     { date: "2026-11-10", hour: 10, text: "Exam! Bring your student card." },
+   ========================================================================== */
+
+const NOTES = [
+  { date: "2026-11-03", hour: 12, text: "протокол на тема 'Ефект на Хол'" },   // 1
+  { date: "2026-11-03", hour: 10, text: "чертеж за домашно" },   // 2
+  { date: "", hour: 0, text: "" },   // 3
+  { date: "", hour: 0, text: "" },   // 4
+  { date: "", hour: 0, text: "" },   // 5
+  { date: "", hour: 0, text: "" },   // 6
+  { date: "", hour: 0, text: "" },   // 7
+  { date: "", hour: 0, text: "" },   // 8
+  { date: "", hour: 0, text: "" },   // 9
+  { date: "", hour: 0, text: "" },   // 10
+];
+
+/* ==========================================================================
+   5. LOGIC - normally there is no need to change anything below
+   ========================================================================== */
+
+const FIRST_HOUR = 7;
+const LAST_HOUR = 18;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const MS_PER_WEEK = 7 * MS_PER_DAY;
+
+// Index = Date.getDay() (0 = Sunday). Sunday has no schedule, so it is always empty.
+const DAY_KEYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+
+/* ---- Dates ------------------------------------------------------------- */
+
+// Turns "YYYY-MM-DD" into a local Date at midnight.
+function parseDate(text) {
+  const [year, month, day] = text.split("-").map(Number);
+  return new Date(year, month - 1, day);
+}
+
+// Returns the Monday (as a UTC timestamp) of the week the date belongs to.
+// UTC is used so that daylight saving changes can't break the week counting.
+function mondayOf(date) {
+  const daysSinceMonday = (date.getDay() + 6) % 7;
+  return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate() - daysSinceMonday);
+}
+
+// Week 1 = the week containing FIRST_WEEK_DATE. Dates before it give 0, -1, ...
+function getWeekNumber(date) {
+  const weeksPassed = Math.round((mondayOf(date) - mondayOf(parseDate(FIRST_WEEK_DATE))) / MS_PER_WEEK);
+  return weeksPassed + 1;
+}
+
+// "odd" or "even" (works for negative week numbers too).
+function getParity(weekNumber) {
+  return Math.abs(weekNumber) % 2 === 1 ? "odd" : "even";
+}
+
+function addDays(date, amount) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + amount);
+}
+
+/* ---- Schedule lookup --------------------------------------------------- */
+
+// A lesson row as shown in the table.
+//   title / details       -> what is valid now
+//   oldTitle / oldDetails -> the replaced original text (shown struck through); "" if none
+//   cancelled             -> true if the whole lesson is cancelled
+//   notes                 -> special notes for this lesson (list of texts)
+function createEntry(hour, fields) {
+  return { hour, title: "", details: "", oldTitle: "", oldDetails: "", cancelled: false, notes: [], ...fields };
+}
+
+// "2026-11-04" - the same format as the dates in CORRECTIONS.
+function formatDateKey(date) {
+  const pad = n => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+// The regular lesson at this date and hour, or null if there is none.
+function getOriginalLesson(date, hour) {
+  const dayData = SCHEDULE[DAY_KEYS[date.getDay()]] || {};
+  const lesson = (dayData[getParity(getWeekNumber(date))] || {})[hour];
+  return lesson && (lesson.title.trim() || lesson.details.trim()) ? lesson : null;
+}
+
+// The correction for this date and hour, or null. If there are several, the last one wins.
+function getCorrection(date, hour) {
+  const key = formatDateKey(date);
+  const matches = CORRECTIONS.filter(c => c.date === key && Number(c.hour) === hour);
+  return matches.length > 0 ? matches[matches.length - 1] : null;
+}
+
+// The special notes (list of texts) for this date and hour.
+function getNotes(date, hour) {
+  const key = formatDateKey(date);
+  return NOTES
+    .filter(note => note.date === key && Number(note.hour) === hour && note.text.trim())
+    .map(note => note.text);
+}
+
+// Combines the regular lesson with the correction (either can be null).
+// Returns the row to show, or null if nothing happens at this hour.
+function resolveLesson(hour, original, correction) {
+  if (!correction) {
+    return original ? createEntry(hour, original) : null;
+  }
+
+  const newTitle = correction.title.trim() ? correction.title : "";
+  const newDetails = correction.details.trim() ? correction.details : "";
+
+  // No regular lesson: a filled-in correction adds a new one.
+  if (!original) {
+    return newTitle || newDetails ? createEntry(hour, { title: newTitle, details: newDetails }) : null;
+  }
+
+  // Nothing filled in: the lesson is cancelled.
+  if (!newTitle && !newDetails) {
+    return createEntry(hour, { ...original, cancelled: true });
+  }
+
+  // Only details filled in: same subject, new details.
+  if (!newTitle) {
+    return createEntry(hour, { title: original.title, details: newDetails, oldDetails: original.details });
+  }
+
+  // Subject filled in: a completely different lesson.
+  return createEntry(hour, {
+    title: newTitle, details: newDetails,
+    oldTitle: original.title, oldDetails: original.details,
+  });
+}
+
+// Returns the rows for a date: [{ hour, title, details, ... }, ...], in hour order.
+function getEntriesForDate(date) {
+  const entries = [];
+
+  for (let hour = FIRST_HOUR; hour <= LAST_HOUR; hour++) {
+    const entry = resolveLesson(hour, getOriginalLesson(date, hour), getCorrection(date, hour));
+
+    if (entry) {
+      entry.notes = getNotes(date, hour);
+      entries.push(entry);
+    } else if (SHOW_EMPTY_HOURS) {
+      entries.push(createEntry(hour, { notes: getNotes(date, hour) }));
+    }
+  }
+  return entries;
+}
+
+function isFilled(entry) {
+  return Boolean(entry.title.trim() || entry.details.trim());
+}
+
+// Is the date still worth showing? It needs at least one entry, and the last
+// lesson of the day must not have ended yet (this only matters for today).
+function isUpcoming(date, now) {
+  const filled = getEntriesForDate(date).filter(isFilled);
+  if (filled.length === 0) return false;
+
+  const lastHour = filled[filled.length - 1].hour;
+  const endOfLastLesson = new Date(
+    date.getFullYear(), date.getMonth(), date.getDate(), lastHour, LESSON_MINUTES
+  );
+  return now < endOfLastLesson;
+}
+
+// Starting at `startDate` (inclusive), finds the first upcoming date with entries.
+// Odd/even weeks repeat every 14 days, so looking 28 days ahead is plenty.
+function findNextDateWithEntries(startDate, now) {
+  for (let offset = 0; offset < 28; offset++) {
+    const date = addDays(startDate, offset);
+    if (isUpcoming(date, now)) return date;
+  }
+  return null;
+}
+
+/* ---- Rendering --------------------------------------------------------- */
+
+function formatHour(hour) {
+  const pad = n => String(n).padStart(2, "0");
+  const endMinutes = LESSON_MINUTES % 60;
+  const endHour = hour + Math.floor(LESSON_MINUTES / 60);
+  return `${pad(hour)}:00-${pad(endHour)}:${pad(endMinutes)}`;
+}
+
+function createCell(tag, text, className) {
+  const cell = document.createElement(tag);
+  cell.textContent = text; // textContent keeps any special characters safe
+  if (className) cell.className = className;
+  return cell;
+}
+
+// A cell for a title or details: the replaced text (struck through) on top,
+// the current text below it. With `marked` a red asterisk follows the text.
+function createLessonCell(oldText, text, className, marked = false) {
+  const cell = document.createElement("td");
+  if (className) cell.className = className;
+
+  if (oldText) cell.append(createCell("div", oldText, "old"));
+  if (text || marked) {
+    const line = createCell("div", text);
+    if (marked) line.append(createCell("span", "*", "note-mark"));
+    cell.append(line);
+  }
+  return cell;
+}
+
+// The extra row under a lesson that holds its special notes.
+function buildNoteRow(notes) {
+  const cell = document.createElement("td");
+  cell.colSpan = 3;
+  for (const note of notes) cell.append(createCell("div", note));
+
+  const row = document.createElement("tr");
+  row.className = "note-row";
+  row.append(cell);
+  return row;
+}
+
+function buildTable(entries) {
+  const table = document.createElement("table");
+
+  const headRow = document.createElement("tr");
+  headRow.append(
+    createCell("th", TEXT.colTime),
+    createCell("th", TEXT.colTitle),
+    createCell("th", TEXT.colDetails)
+  );
+  const thead = document.createElement("thead");
+  thead.append(headRow);
+  table.append(thead);
+
+  const tbody = document.createElement("tbody");
+  for (const entry of entries) {
+    const row = document.createElement("tr");
+    const hasNotes = entry.notes.length > 0;
+    if (entry.cancelled) row.classList.add("cancelled");
+    if (hasNotes) row.classList.add("has-note");
+    row.append(
+      createCell("td", formatHour(entry.hour), "time"),
+      createLessonCell(entry.oldTitle, entry.title, "title", hasNotes),
+      createLessonCell(entry.oldDetails, entry.details)
+    );
+    tbody.append(row);
+    if (hasNotes) tbody.append(buildNoteRow(entry.notes));
+  }
+  table.append(tbody);
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "table-wrap";
+  wrapper.append(table);
+  return wrapper;
+}
+
+// "Понеделник, 2 ноември 2026"
+function formatDate(date) {
+  const weekday = TEXT.weekdays[date.getDay()];
+  const month = TEXT.months[date.getMonth()];
+  return `${weekday}, ${date.getDate()} ${month} ${date.getFullYear()}`;
+}
+
+// "днес", "утре", "другиден" or "след N дена"
+function describeDistance(date, today) {
+  const toUtc = d => Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+  const days = Math.round((toUtc(date) - toUtc(today)) / MS_PER_DAY);
+
+  if (days === 0) return TEXT.today;
+  if (days === 1) return TEXT.tomorrow;
+  if (days === 2) return TEXT.dayAfterTomorrow;
+  return TEXT.inDays(days);
+}
+
+// One block = date title + week info + table.
+function buildDaySection(date, today) {
+  const weekNumber = getWeekNumber(date);
+  const parity = getParity(weekNumber);
+
+  const section = document.createElement("section");
+
+  const title = document.createElement("h2");
+  title.textContent = `${formatDate(date)} (${describeDistance(date, today)})`;
+
+  const weekInfo = document.createElement("p");
+  weekInfo.className = "week-info";
+  weekInfo.innerHTML = `${TEXT.weekLabel} <b></b> (${TEXT[parity]})`;
+  weekInfo.querySelector("b").textContent = weekNumber;
+
+  section.append(title, weekInfo, buildTable(getEntriesForDate(date)));
+  return section;
+}
+
+// Shows the days and the "next day" button.
+function showSchedule() {
+  const app = document.getElementById("app");
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  let lastShownDate = null;   // the most recent day on the page
+
+  // The next day with entries after the last shown one (or from today, at the start).
+  const findNextDay = () =>
+    findNextDateWithEntries(lastShownDate ? addDays(lastShownDate, 1) : today, now);
+
+  if (!findNextDay()) {
+    const message = document.createElement("p");
+    message.className = "empty";
+    message.textContent = TEXT.nothingFound;
+    app.append(message);
+    return;
+  }
+
+  const button = document.createElement("button");
+  button.id = "next-day";
+  button.type = "button";
+  button.textContent = TEXT.showNextDay;
+  app.append(button);
+
+  // Adds one more day above the button; hides the button when there are no more days.
+  function addNextDay() {
+    const date = findNextDay();
+    if (!date) return;
+    button.before(buildDaySection(date, today));
+    lastShownDate = date;
+    if (!findNextDay()) button.hidden = true;
+    fitTables();
+  }
+
+  button.addEventListener("click", addNextDay);
+  for (let i = 0; i < DAYS_TO_SHOW; i++) addNextDay();
+}
+
+/* ---- Fitting the text to the screen ------------------------------------ */
+
+// Finds the largest font size (up to the normal size) at which the table fits
+// in its container without any text wrapping.
+function findFittingFontSize(table) {
+  const container = table.parentElement;
+  table.style.fontSize = "";                       // back to the normal size
+  let size = parseFloat(getComputedStyle(table).fontSize);
+
+  for (let attempt = 0; attempt < 6; attempt++) {
+    table.style.fontSize = `${size}px`;
+    const tooWide = table.getBoundingClientRect().width - container.clientWidth;
+    if (tooWide <= 0.5 || size <= MIN_FONT_SIZE) break;
+    size = Math.max(MIN_FONT_SIZE, size * (container.clientWidth / table.getBoundingClientRect().width) * 0.99);
+  }
+  return size;
+}
+
+// All tables get the same font size - the smallest one that any of them needs.
+function fitTables() {
+  const tables = [...document.querySelectorAll("table")];
+  const size = Math.min(...tables.map(findFittingFontSize));
+  for (const table of tables) table.style.fontSize = `${size}px`;
+}
+
+/* ---- Start ---------------------------------------------------------------- */
+
+// Prints a warning in the browser console (F12) for lines that look mistyped.
+function checkEntries(list, listName) {
+  for (const [index, item] of list.entries()) {
+    if (item.date === "") continue;
+    const validDate = /^\d{4}-\d{2}-\d{2}$/.test(item.date);
+    const validHour = Number.isInteger(item.hour) && item.hour >= FIRST_HOUR && item.hour <= LAST_HOUR;
+    if (!validDate || !validHour) {
+      console.warn(`${listName}, line ${index + 1} is ignored: use date "YYYY-MM-DD" and an hour from ${FIRST_HOUR} to ${LAST_HOUR}.`);
+    }
+  }
+}
+
+checkEntries(CORRECTIONS, "CORRECTIONS");
+checkEntries(NOTES, "NOTES");
+showSchedule();
+fitTables();
+window.addEventListener("resize", fitTables);
+</script>
+</body>
+</html>
